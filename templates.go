@@ -139,12 +139,21 @@ func generateServerNames(s ServiceInformation, domain string) []serverName {
 
 var nodeNameReplacer = strings.NewReplacer(".", "_", ":", "_")
 
+func intRange(n, initial, step int) []int {
+	r := make([]int, n)
+	for i := 0; i < n; i++ {
+		r[i] = initial + i*step
+	}
+	return r
+}
+
 func (t *Template) Execute(info *ClusterInformation) error {
 	funcMap := template.FuncMap{
-		"ServerNames": generateServerNames,
 		"EscapeNode":  nodeNameReplacer.Replace,
-		"ToUpper":     strings.ToUpper,
+		"IntRange":    intRange,
+		"ServerNames": generateServerNames,
 		"ToLower":     strings.ToLower,
+		"ToUpper":     strings.ToUpper,
 	}
 
 	// template.Execute will use the base name of t.Source
