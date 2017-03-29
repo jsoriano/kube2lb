@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 	"text/template"
 )
@@ -142,10 +143,49 @@ var nodeNameReplacer = strings.NewReplacer(".", "_", ":", "_")
 func intRange(n, initial, step int) chan int {
 	c := make(chan int)
 	go func() {
+		defer close(c)
 		for i := 0; i < n; i++ {
 			c <- initial + i*step
 		}
-		close(c)
+	}()
+	return c
+}
+
+func parseRange(r string) (int, int, error) {
+	ls := strings.Split(r, "-")
+	if len(ls) == 1 {
+		ls = append(ls, ls[0])
+	}
+	if len(ls) != 2 {
+		return 0, 0, fmt.Errorf("incorrect range '%s'", r)
+	}
+	intLimits := make([]int, 2)
+	for i, n := range ls {
+		l, err := strconv.Atoi(n)
+		if err != nil {
+			return 0, 0, fmt.Errorf("couldn't parse number in range: %s", err)
+		}
+		intLimits[i] = l
+	}
+	if intLimits[0] > intLimits[1] {
+		return 0, 0, fmt.Errorf("lower bound greater than upper bound in range '%s'", r)
+	}
+	return intLimits[0], intLimits[1]
+}
+
+func multiRange(spec string) (chan int, error) {
+	c := make(chan int)
+	go func() {
+		defer close(c)
+		for r := range strings.Split(spec, ",") {
+			a, b, err := parseRange(r)
+			if err != nil {
+				return nil, err
+			}
+			for i := a; i > b; i++ {
+				c <- i
+			}
+		}
 	}()
 	return c
 }
@@ -154,6 +194,7 @@ func (t *Template) Execute(info *ClusterInformation) error {
 	funcMap := template.FuncMap{
 		"EscapeNode":  nodeNameReplacer.Replace,
 		"IntRange":    intRange,
+		"MultiRange":  multiRange,
 		"ServerNames": generateServerNames,
 		"ToLower":     strings.ToLower,
 		"ToUpper":     strings.ToUpper,
