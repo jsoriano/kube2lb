@@ -22,13 +22,11 @@ import (
 	"fmt"
 	"log"
 	"strings"
-	"time"
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/pkg/api"
-	"k8s.io/client-go/pkg/api/v1"
-	"k8s.io/client-go/pkg/watch"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
@@ -42,9 +40,11 @@ type KubernetesClient struct {
 	config    *rest.Config
 	clientset *kubernetes.Clientset
 
-	nodeWatcher      watch.Interface
-	serviceWatcher   watch.Interface
-	endpointsWatcher watch.Interface
+	nodesIndexer     cache.Indexer
+	servicesIndexer  cache.Indexer
+	endpointsIndexer cache.Indexer
+
+	controllersStop chan struct{}
 
 	notifiers []Notifier
 	templates []*Template
@@ -75,36 +75,7 @@ func NewKubernetesClient(kubecfg, apiserver, domain string) (*KubernetesClient, 
 		templates: make([]*Template, 0, 10),
 		domain:    domain,
 	}
-
-	if err := kc.connect(); err != nil {
-		return nil, err
-	}
 	return kc, nil
-}
-
-func (c *KubernetesClient) connect() (err error) {
-	log.Printf("Using %s for kubernetes master", c.config.Host)
-
-	options := v1.ListOptions{}
-
-	ni := c.clientset.Core().Nodes()
-	c.nodeWatcher, err = ni.Watch(options)
-	if err != nil {
-		return fmt.Errorf("Couldn't watch events on nodes: %v", err)
-	}
-
-	si := c.clientset.Core().Services(api.NamespaceAll)
-	c.serviceWatcher, err = si.Watch(options)
-	if err != nil {
-		return fmt.Errorf("Couldn't watch events on services: %v", err)
-	}
-
-	ei := c.clientset.Core().Endpoints(api.NamespaceAll)
-	c.endpointsWatcher, err = ei.Watch(options)
-	if err != nil {
-		return fmt.Errorf("Couldn't watch events on endpoints: %v", err)
-	}
-	return
 }
 
 func (c *KubernetesClient) AddNotifier(n Notifier) {
@@ -132,9 +103,8 @@ func (c *KubernetesClient) ExecuteTemplates(info *ClusterInformation) {
 }
 
 func (c *KubernetesClient) getNodeNames() ([]string, error) {
-	options := v1.ListOptions{}
-	ni := c.clientset.Core().Nodes()
-	nodes, err := ni.List(options)
+	lister := cache.StoreToNodeLister{c.nodesIndexer}
+	nodes, err := lister.List()
 	if err != nil {
 		return nil, err
 	}
@@ -146,24 +116,22 @@ func (c *KubernetesClient) getNodeNames() ([]string, error) {
 }
 
 func (c *KubernetesClient) getServices(namespace string) ([]ServiceInformation, error) {
-	options := v1.ListOptions{}
-
-	si := c.clientset.Core().Services(api.NamespaceAll)
-	services, err := si.List(options)
+	servicesLister := cache.StoreToServiceLister{c.servicesIndexer}
+	services, err := servicesLister.List(nil)
 	if err != nil {
 		return nil, fmt.Errorf("Couldn't get services: %s", err)
 	}
 
-	ei := c.clientset.Core().Endpoints(api.NamespaceAll)
-	endpoints, err := ei.List(options)
+	endpointsLister := cache.StoreToEndpointsLister{c.endpointsIndexer}
+	endpoints, err := endpointsLister.List()
 	if err != nil {
 		return nil, fmt.Errorf("Couldn't get endpoints: %s", err)
 	}
 
-	endpointsHelper := NewEndpointsHelper(endpoints)
+	endpointsHelper := NewEndpointsHelper(&endpoints)
 
-	servicesInformation := make([]ServiceInformation, 0, len(services.Items))
-	for _, s := range services.Items {
+	servicesInformation := make([]ServiceInformation, 0, len(services))
+	for _, s := range services {
 		var external []string
 		if domains, ok := s.ObjectMeta.Annotations[ExternalDomainsAnnotation]; ok && len(domains) > 0 {
 			external = strings.Split(domains, ",")
@@ -177,8 +145,8 @@ func (c *KubernetesClient) getServices(namespace string) ([]ServiceInformation, 
 		}
 
 		switch s.Spec.Type {
-		case v1.ServiceTypeNodePort, v1.ServiceTypeLoadBalancer:
-			endpointsPortsMap := endpointsHelper.ServicePortsMap(&s)
+		case api.ServiceTypeNodePort, api.ServiceTypeLoadBalancer:
+			endpointsPortsMap := endpointsHelper.ServicePortsMap(s)
 			if len(endpointsPortsMap) == 0 {
 				log.Printf("Couldn't find endpoints for %s in %s?", s.Name, s.Namespace)
 				continue
@@ -242,8 +210,15 @@ func (c *KubernetesClient) Update() error {
 }
 
 func (c *KubernetesClient) Watch() error {
+	log.Printf("Using %s for kubernetes master", c.config.Host)
+
+	var controllers []cache.ControllerInterface
+
 	isFirstUpdate := true
 	updater := NewUpdater(func() {
+		if len(controllers) == 0 {
+			return
+		}
 		var err error
 		if err = c.Update(); err != nil {
 			log.Printf("Couldn't update state: %s", err)
@@ -257,29 +232,52 @@ func (c *KubernetesClient) Watch() error {
 	})
 	go updater.Run()
 
-	var more bool
-	var e watch.Event
-	for {
-		select {
-		case e, more = <-c.nodeWatcher.ResultChan():
-			if e.Type == watch.Added || e.Type == watch.Deleted {
-				updater.Signal()
-			}
-		case _, more = <-c.serviceWatcher.ResultChan():
-			updater.Signal()
-		case e, more = <-c.endpointsWatcher.ResultChan():
-			updater.Signal()
-		}
-		if !more {
-			log.Printf("Connection closed, trying to reconnect")
-			for {
-				if err := c.connect(); err != nil {
-					log.Println(err)
-					time.Sleep(5 * time.Second)
-				} else {
-					break
-				}
-			}
-		}
+	handler := cache.ResourceEventHandlerFuncs{
+		AddFunc:    func(object interface{}) { updater.Signal() },
+		UpdateFunc: func(oldObject, newObject interface{}) { updater.Signal() },
+		DeleteFunc: func(object interface{}) { updater.Signal() },
 	}
+
+	nodesIndexer, nodesController := cache.NewIndexerInformer(
+		cache.NewListWatchFromClient(c.clientset.Core().RESTClient(), "node", api.NamespaceAll, nil),
+		&api.Node{}, 0, handler, nil)
+	servicesIndexer, servicesController := cache.NewIndexerInformer(
+		cache.NewListWatchFromClient(c.clientset.Core().RESTClient(), "service", api.NamespaceAll, nil),
+		&api.Service{}, 0, handler, nil)
+	endpointsIndexer, endpointsController := cache.NewIndexerInformer(
+		cache.NewListWatchFromClient(c.clientset.Core().RESTClient(), "endpoints", api.NamespaceAll, nil),
+		&api.Endpoints{}, 0, handler, nil)
+
+	c.nodesIndexer = nodesIndexer
+	c.servicesIndexer = servicesIndexer
+	c.endpointsIndexer = endpointsIndexer
+
+	controllers = []cache.ControllerInterface{
+		nodesController,
+		servicesController,
+		endpointsController,
+	}
+
+	stop := make(chan struct{}, len(controllers))
+	stopped := make(chan struct{}, len(controllers))
+	for _, controller := range controllers {
+		go func() {
+			controller.Run(stop)
+			stopped <- struct{}{}
+		}()
+	}
+
+	c.controllersStop = make(chan struct{}, 1)
+	go func() {
+		<-c.controllersStop
+		for range controllers {
+			stop <- struct{}{}
+		}
+	}()
+
+	for range controllers {
+		<-stopped
+	}
+
+	return nil
 }

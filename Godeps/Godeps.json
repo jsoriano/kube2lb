@@ -668,6 +668,11 @@
 			"Rev": "e121606b0d09b2e1c467183ee46217fa85a6b672"
 		},
 		{
+			"ImportPath": "k8s.io/client-go/pkg/util/diff",
+			"Comment": "v2.0.0",
+			"Rev": "e121606b0d09b2e1c467183ee46217fa85a6b672"
+		},
+		{
 			"ImportPath": "k8s.io/client-go/pkg/util/errors",
 			"Comment": "v2.0.0",
 			"Rev": "e121606b0d09b2e1c467183ee46217fa85a6b672"
@@ -799,6 +804,11 @@
 		},
 		{
 			"ImportPath": "k8s.io/client-go/tools/auth",
+			"Comment": "v2.0.0",
+			"Rev": "e121606b0d09b2e1c467183ee46217fa85a6b672"
+		},
+		{
+			"ImportPath": "k8s.io/client-go/tools/cache",
 			"Comment": "v2.0.0",
 			"Rev": "e121606b0d09b2e1c467183ee46217fa85a6b672"
 		},

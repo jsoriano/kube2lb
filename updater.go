@@ -40,7 +40,8 @@ func (u *Updater) antiBurst() {
 		select {
 		case <-u.burst:
 		case <-time.After(time.Second):
-			if u.updateNeeded.Load().(int) == 1 {
+			updateNeeded, ok := u.updateNeeded.Load().(bool)
+			if ok && updateNeeded {
 				u.signal <- struct{}{}
 			}
 		}
@@ -50,12 +51,12 @@ func (u *Updater) antiBurst() {
 func (u *Updater) Run() {
 	go u.antiBurst()
 	for _ = range u.signal {
-		u.updateNeeded.Store(0)
+		u.updateNeeded.Store(false)
 		u.f()
 	}
 }
 
 func (u *Updater) Signal() {
-	u.updateNeeded.Store(1)
+	u.updateNeeded.Store(true)
 	u.burst <- struct{}{}
 }

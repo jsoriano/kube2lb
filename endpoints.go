@@ -19,7 +19,7 @@ package main
 import (
 	"fmt"
 
-	"k8s.io/client-go/pkg/api/v1"
+	"k8s.io/client-go/pkg/api"
 )
 
 type ServiceEndpoint struct {
@@ -33,22 +33,22 @@ func (e *ServiceEndpoint) String() string {
 }
 
 type EndpointsHelper struct {
-	endpointsMap map[string]*v1.Endpoints
+	endpointsMap map[string]*api.Endpoints
 }
 
-func metaKey(meta v1.ObjectMeta) string {
+func metaKey(meta api.ObjectMeta) string {
 	return fmt.Sprintf("%s %s", meta.Name, meta.Namespace)
 }
 
-func NewEndpointsHelper(endpoints *v1.EndpointsList) *EndpointsHelper {
-	endpointsMap := make(map[string]*v1.Endpoints)
+func NewEndpointsHelper(endpoints *api.EndpointsList) *EndpointsHelper {
+	endpointsMap := make(map[string]*api.Endpoints)
 	for i, endpoint := range endpoints.Items {
 		endpointsMap[metaKey(endpoint.ObjectMeta)] = &endpoints.Items[i]
 	}
 	return &EndpointsHelper{endpointsMap}
 }
 
-func (h *EndpointsHelper) ServicePortsMap(s *v1.Service) map[int32][]ServiceEndpoint {
+func (h *EndpointsHelper) ServicePortsMap(s *api.Service) map[int32][]ServiceEndpoint {
 	endpoints, found := h.endpointsMap[metaKey(s.ObjectMeta)]
 	if !found {
 		return nil
