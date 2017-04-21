@@ -26,6 +26,7 @@ import (
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/pkg/api"
+	"k8s.io/client-go/pkg/api/meta"
 	"k8s.io/client-go/pkg/api/v1"
 	"k8s.io/client-go/pkg/runtime"
 	"k8s.io/client-go/pkg/util/wait"
@@ -297,6 +298,14 @@ func (c *KubernetesClient) Watch() error {
 				return eqUIDs && eqVersion, nil
 			})
 		case e, more = <-c.endpointsWatcher.ResultChan():
+			a, err := meta.Accessor(e.Object)
+			if err != nil {
+				break
+			}
+			s, found := c.serviceStore.Get(a.GetNamespace(), a.GetName())
+			if found && (s.Spec.Type != v1.ServiceTypeNodePort && s.Spec.Type != v1.ServiceTypeLoadBalancer) {
+				break
+			}
 			updateStore(c.endpointsStore, e, EqualEndpoints)
 		}
 

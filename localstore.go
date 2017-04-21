@@ -24,6 +24,12 @@ import (
 	"k8s.io/client-go/pkg/runtime"
 )
 
+const resourceLinkFmt = "/api/v1/namespaces/%s/%s/%s"
+
+func resourceLink(namespace, resource, name string) string {
+	return fmt.Sprintf(resourceLinkFmt, namespace, resource, name)
+}
+
 type Store interface {
 	Delete(runtime.Object) runtime.Object
 	Update(runtime.Object) runtime.Object
@@ -82,6 +88,19 @@ func (s *ServiceStore) List() ([]*v1.Service, error) {
 		services = append(services, service)
 	}
 	return services, nil
+}
+
+func (s *ServiceStore) Get(namespace, name string) (*v1.Service, bool) {
+	link := resourceLink(namespace, "services", name)
+	o, found := s.Objects[link]
+	if !found {
+		return nil, false
+	}
+	service, ok := o.(*v1.Service)
+	if !ok {
+		return nil, false
+	}
+	return service, true
 }
 
 type EndpointsStore struct {
